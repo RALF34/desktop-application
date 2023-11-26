@@ -30,11 +30,11 @@ function (history, data_45_days_ago, data_yesterday){
 }
 ''')
 
-def initialize_database(n_days):
+def initialize_database():
     database = mongoClient["air_quality"]
     DATE = date.today()
     k = 1
-    while k <= n_days:
+    while k <= 45:
         DATE -= timedelta(days=k)
         url = "https://files.data.gouv.fr/lcsqa/concentrations-de"+\
               "-polluants-atmospheriques-reglementes/temps-reel/"+\
@@ -165,24 +165,26 @@ def update():
 
 def get_response(
 	station,
-	pollutant,
+	pollutants,
 	n_days
 ):
 	response = []
-    dictionary = {str(x): 0 for x in range(24)}
-    data = database["LCSQA_data"].find(
-		{"_id.station": station,
-		"_id.pollutant": pollutant}
-	)
-    for document in data:
-		hour = document["_id"]["hour"]
-        history = list(zip(
-            document["history"]["values"],
-            document["history"]["dates"]
-        )).reversed()
-        i = 0
-        while date.today()-history[i][1]<=timedelta(days=n_days):
-            i += 1
-        dictionary[str(hour)] = mean([e[0] for e in history[:i]])
-    response.append(dictionary)
-return response
+    for p in pollutants:
+        averages = {str(x): 0 for x in range(24)}
+        data = database["LCSQA_data"].find(
+		    {"_id.station": station,
+		    "_id.pollutant": p}
+	    )
+        for document in data:
+		    hour = document["_id"]["hour"]
+            history = list(zip(
+                document["history"]["values"],
+                document["history"]["dates"]
+            )).reversed()
+            i = 0
+            while date.today()-history[i][1]<=timedelta(days=n_days):
+                i += 1
+            averages[str(hour)] = mean([e[0] for e in history[:i]])
+        response.append(averages.values())
+    return response
+ 

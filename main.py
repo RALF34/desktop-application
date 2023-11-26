@@ -12,26 +12,17 @@ app = FastAPI()
 
 initialize_database()
 
-class Pollutant(str, Enum):
-    O3 = "Ozone",
-    NO2 = "Dioxyde d'azote",
-    SO2 = "Dioxyde de soufre",
-    PM2.5 = "Particules fines",
-    PM10 = "Particules",
-    CO = "Monoxyde de carbone"
-
-class averageDailyVariationOfPollution(BaseModel):
-    pollutant: Pollutant
-    average_concentrations: Dict[str, float] = Field(
+class averageConcentrations(BaseModel):
+    values: list[float] = Field(
         description="The average values of air concentration associated \
-        to each of the 24 hours of the day."
+        to each of the 24 hours of the day (set to 0 when not enough data)."
     )
 
 LCSQA_stations = read_excel(
 "Liste points de mesures 2020 pour site LCSQA_221292021.xlsx"
 )["Code station"].tolist()
 
-@app.get("/{station}", response_model=list[averageDailyVariationOfPollution])
+@app.get("/", response_model=list[averageConcentrations])
 async def get_response(
     station: Annotated[
         str,
@@ -43,8 +34,8 @@ async def get_response(
             pattern="^FR([0-9]{5}$)"
         )
     ],
-    pollutant: Annotated[
-        list[Pollutant],
+    pollutants: Annotated[
+        list[str],
         Query(
             description=(
                 "Pollutant(s) whose average daily variation of air \
@@ -56,8 +47,10 @@ async def get_response(
         int,
         Query(
             description=(
-                "If specified, the analysis of the API will be based on \
-                 pollution data collected over the 'n_days' last days."
+                "Parameter specifying the size (in number of days) of\
+                 the period whose pollution data are being used by the\
+                 API (i.e the analysis is based on data collected over\
+                 the last 'n_days' days)."
             ),
             ge=1,
             le=44
@@ -72,3 +65,4 @@ async def get_response(
             pollutants,
             n_days
         )
+ 
