@@ -140,7 +140,7 @@ def update():
                               "pollutant": "$Polluant"
                               "hour": "$hour"},
                       "history": {"date": "$date",
-					  			  "value": "$valeur brute"}}}
+                      "value": "$valeur brute"}}}
     ])
 
     database["LCSQA_data"].aggregate([
@@ -187,4 +187,3 @@ def get_response(
             averages[str(hour)] = mean([e[0] for e in history[:i]])
         response.append(averages.values())
     return response
- 
