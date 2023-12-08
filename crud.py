@@ -7,7 +7,7 @@ from pymongo import MongoClient
 
 from dictionaries import french_departments
 
-mongoClient = MongoClient()
+mongoClient = MongoClient("mongodb://db:27017")
 
 stringToDatetime = lambda x: datetime.strptime(x,"%Y/%m/%d %H:%M:%S")
 

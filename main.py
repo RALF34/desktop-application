@@ -29,7 +29,7 @@ async def get_response(
         Path(
             description=(
                 "Code identifying the air quality monitoring station \
-                 whose data will be used by the API".
+                 whose data will be used by the API."
             ),
             pattern="^FR([0-9]{5}$)"
         )
@@ -65,4 +65,3 @@ async def get_response(
             pollutants,
             n_days
         )
- 
