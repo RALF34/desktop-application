@@ -98,12 +98,9 @@ names = [
    "Martinique",
    "Guyane",
    "La Réunion",
-   "Mayotte"
-]
+   "Mayotte"]
 
 french_departments = {
     code: name for code, name in zip(
         list(range(1,11)+list(range(12,98)),
-        names)
-    )
-}
+        names))}

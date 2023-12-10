@@ -5,11 +5,11 @@ from fastapi import FastAPI, HTTPException, Path, Query
 from pandas import read_excel
 from pydantic import BaseModel, Field
 
-from .crud import get_response, initialize_or_update_database
+from .crud import get_response, create_or_update_database
 
 app = FastAPI()
 
-initialize_or_update_database()
+create_or_update_database()
 
 class averageConcentrations(BaseModel):
     values: list[float] = Field(
