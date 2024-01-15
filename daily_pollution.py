@@ -1,7 +1,6 @@
 import json
-import re
-import subprocess
 import time
+from datetime import date, datetime, timedelta
 
 import requests
 from matplotlib import pyplot
@@ -58,8 +57,9 @@ def get_choices_from_database(about, search_filter=None):
             list_of_stations = database["cities"].find_one(
                 search_filter
             )["stations"]
-            items = list(set([e["name"]+" (zone "+e["zone"]+")"+e["code"] 
-            for e in list_of_stations]))
+            items = list(set([
+                e["name"]+" (zone "+e["zone"]+")"+e["code"]
+                for e in list_of_stations]))
         case "pollutants":
             items = list(map(
                 lambda x: symbol_to_name[x],
@@ -68,15 +68,18 @@ def get_choices_from_database(about, search_filter=None):
                 )["monitored_pollutants"]))))
     choices = list(zip(range(1,len(items)+1), sorted(items)))
     if about == "regions":
-        choices.append((len(choices)+1,"OUTRE MER"))
+        choices.append((len(choices)+1,"OUTRE-MER"))
     return choices
 
-def get_input_from_user(about, choices, shorter_period=False):
-    french_translation = {
-        "regions": "régions",
-        "departments": "départements",
-        "cities": "communes",
-        "stations": "stations"}
+french_translation = {
+    "regions": "régions",
+    "departments": "départements",
+    "cities": "communes",
+    "stations": "stations"}
+
+all_the_stations = database["distribution_pollutants"].distinct("_id")
+
+def get_input_from_user(about, choices, shorter_period=False, first_choice=False):
     if about in french_translation.keys():
         message_to_user = "Veuillez indiquer le numéro correspondant "+\
             ("à la " if about in ["regions","cities","stations"] else "au ")+\
@@ -87,7 +90,7 @@ def get_input_from_user(about, choices, shorter_period=False):
     elif about == "pollutants":
         message_to_user = "Par quelle type de pollution ètes-vous intéressé ?\n\n"
         list_choices = [
-            str(e[0])+" : Pollution "+("à" if e[1]=="ozone" else "au")+e 
+            str(e[0])+" : Pollution "+("à l'" if e[1]=="ozone" else "au ")+e[1]
             for e in choices]
     elif not(shorter_period):
         message_to_user = "L'analyse de pollution est par défaut réalisée à \
@@ -99,14 +102,23 @@ def get_input_from_user(about, choices, shorter_period=False):
             (Indiquez '0' pour revenir aux choix précédents)\n\n"
         list_choices = [""]
     if about != "regions":
-        list_choices += ["\n"+str(len(list_choices)+1)+ " : Retour aux choix précédents"]
-    
-    text =  message_to_user+"\n".join(list_choices)+"\n"
-    number = input(text)
+        list_choices += [
+            "\n"+str(len(list_choices)+1)+ " : Retour"]
     x = 0 if about == "n_days" and not(shorter_period) else 1
     y = 45 if about == "n_days" and shorter_period else len(list_choices)+1
-    while not (number.isdigit() and int(number) not in range(x,y)):
-        number = input(text)
+    text = message_to_user+"\n".join(list_choices)+"\n\n"
+    space = "\n" if (about == "regions" and first_choice) else "\n"*4
+    number = input(space+text)
+    is_number = lambda s: \
+    not(sum(list(map(lambda x: 0 if x else 1,[e.isdigit() for e in s]))))
+    station_found = True
+    while not(is_number(number) and int(number) in range(x,y)):
+        if about =="stations":
+            item = list_choices[int(number)-1][1]
+            station_found = item[item.index(")")+1:] in all_the_stations
+        if not(station_found):
+            print("Désolé, aucune données disponibles pour cette station.\n")
+        number = input("\n"*4+text)
     if about == "n_days" and not(shorter_period):
         if int(number):
             return "45"
@@ -115,111 +127,135 @@ def get_input_from_user(about, choices, shorter_period=False):
     else:
         return number
 
-def get_selected_item(about, filter_item=None):
-    if filter_item is None:
-        choices = get_choices_from_database(about)
-    else:
-        choices = get_choices_from_database(about, search_filter={"_id": filter_item})
-    selected_number = int(get_input_from_user(about, choices))
-    item = 0 if selected_number == len(choices) else choices[selected_number-1][1]
-    return item
+steps = ["regions","departments","cities","stations","pollutants","n_days"]
 
-def get_query_parameters(about, item=None, previous_item=None):
-    match about:
-        case "regions":
-            region = get_selected_item(about)
-            return get_query_parameters("departments", item=region)
-        case "departments":
-            department = get_selected_item(about, item)
-            if type(department) is int:
-                return get_query_parameters("regions")
+class Interaction_with_user():
+    def __init__(self):
+        self.parameters = {
+            "station code": None,
+            "pollutant": None,
+            "n_days": None}
+        self.i = 0
+        self.first_choice = True
+        self.previous_filter = None
+        self.next_filter = None
+        self.go_back = False
+        self.is_over = False
+
+    def get_selected_item(self):
+        current_step = steps[self.i]
+        if not(self.i):
+            choices = get_choices_from_database(current_step)
+        elif current_step != "n_days":
+            choices = get_choices_from_database(
+                current_step,
+                search_filter=self.next_filter)
+        else:
+            choices = []
+        selected_number = int(get_input_from_user(
+            current_step,
+            choices,
+            first_choice=self.first_choice))
+        item = 0 if selected_number == len(choices)+1 else \
+        choices[selected_number-1][1]
+        if type(item) is int:
+            self.go_back = True
+        else:
+            self.previous_filter = self.next_filter
+            if current_step in ["regions","departments","cities"]:
+                self.next_filter = {"_id": item}
+            elif current_step == "stations":
+                code = item[item.index(")")+1:]
+                self.parameters["station code"] = code
+                self.next_filter = {"_id": code}
+            elif current_step == "pollutants":
+                self.parameters["pollutant"] = name_to_symbol[item]
             else:
-                return get_query_parameters("cities", item=department, previous_item=item)
-        case "cities":
-            city = get_selected_item(about, item)
-            if type(city) is int:
-                return get_query_parameters("departments", item=previous_item)
-            else:
-                return get_query_parameters("stations", item=city, previous_item=item)
-        case "stations":
-            s = get_selected_item(about, item)
-            if type(s) is int:
-                return get_query_parameters("cities", item=previous_item)
-            else:
-                station, code = s[:s.index("(")-1], s[s.index(")")+1:]
-                return code, get_query_parameters("pollutants", item=station, previous_item=item)
-        case "pollutants":
-            pollutant = name_to_symbol[get_selected_item("pollutants", item)]
-            if type(pollutant) is int:
-                return get_query_parameters("stations", item=previous_item)
-            else:
-                return pollutant, get_query_parameters("n_days", previous_item=item)
-        case "n_days":
-            n_days = get_input_from_user("n_days", [])
-            if not(n_days):
-                return get_query_parameters("pollutants", item=previous_item)
-            else:
-                return n_days
+                self.parameters["n_days"] = item
+                self.process_over = True
+        
+    def next_step(self):
+        if self.go_back:
+            self.i -= 1
+            self.next_filter = self.previous_filter
+            self.go_back = False
+        else:
+            self.i += 1
+
 
 if __name__=="__main__":
     i = 0
     while "last_update" not in database.list_collection_names():
         if i == 4:
             i = 0
-        print("Initialisation des données en cours"+"."*i+"\r")
+        print(" Initialisation des données en cours"+(
+            "    " if not(i) else "."*i), end="\r")
         i += 1
         time.sleep(0.7)
     
-    code, pollutant, n_days = get_query_parameters("regions")
+    DATE = date.today() - timedelta(days=1)
+    DATETIME = datetime(DATE.year, DATE.month, DATE.day)
+    if database["last_update"].find_one()["date"] != DATETIME:
+        dictionary = database["distribution_pollutants"].find_one()
+        _ = requests.get(
+            "http://127.0.0.1:8000/?s={}&p={}&n_days=0".format(
+                dictionary["_id"],
+                dictionary["monitored_pollutants"][0]),
+            verify=False)
+    
+    process = Interaction_with_user()
+    while not(process.is_over):
+        process.get_selected_item()
+        process.next_step()
+    
+    query_parameters = process.parameters.values()
     
     data = json.loads(requests.get(
-        "http://127.0.0.1:8000/?s=code&p=pollutants&n=n_days"
+        "http://127.0.0.1:8000/?s={}&p={}&n_days={}".format(*query_parameters),
+        verify=False
     ).json())
 
     fig, ax = pyplot.subplots()
     fig.set_size_inches(17,14)
-    for i, p in enumerate(pollutants):
-        ax.scatter(
-            [x+"h00" for x in range(24)],
-            data[i].values())
-        max_value = max(data[i].values())
-        thresholds = [
-            (x/3)*OMS_guidelines[p]
-            for x in range(1,5)]
-        max_level = 2
-        while (max_level < 5 and thresholds[max_level] < max_value):
-            max_level += 1
-        if max_level == 5:
-            max_level -= 1
-        space = (0.40)*thresholds[0]
-        lim = thresholds[max_level] if max_level == 2 else max_value
-        ax.set_ylim(0,lim+(space if max_level == 2 else 0))
-        colors = ["limegreen","yellow","orange","red"]
-        y_min = 0     
-        for j in list(range(max_level+1)):
-            ax.fill_between(
-                list(range(24)),
-                thresholds[j],
-                y2=y_min,
-                color=colors[j],
-                alpha=0.1)
-            y_min = thresholds[j]
-            if j == 2:
-                ax.axhline(
-                    y=thresholds[j],
-                    color="blueviolet",
-                    linestyle="--",
-                    linewidth=1.7,
-                    label="Concentration \n moyenne \n"+ \
-                          "journalière \n recommandée (O.M.S)")
-        if max_value > thresholds[max_level]:
-            ax.fill_between(
-                list(range(24)),
-                ax.get_ylim()[1],
-                y2=thresholds[max_level],
-                color="magenta",
-                alpha=0.1)
-        ax.set_yticks([0])
-        ax.set_yticklabels([" "])
-        ax.legend(loc="upper right")
-        pyplot.show()
+    ax.scatter([x+"h00" for x in range(24)], data[i].values())
+    max_value = max(data[i].values())
+    thresholds = [
+        (x/3)*OMS_guidelines[query_parameters[1]]
+        for x in range(1,5)]
+    max_level = 2
+    while (max_level < 5 and thresholds[max_level] < max_value):
+        max_level += 1
+    if max_level == 5:
+        max_level -= 1
+    space = (0.40)*thresholds[0]
+    lim = thresholds[max_level] if max_level == 2 else max_value
+    ax.set_ylim(0,lim+(space if max_level == 2 else 0))
+    colors = ["limegreen","yellow","orange","red"]
+    y_min = 0     
+    for j in list(range(max_level+1)):
+        ax.fill_between(
+            list(range(24)),
+            thresholds[j],
+            y2=y_min,
+            color=colors[j],
+            alpha=0.1)
+        y_min = thresholds[j]
+        if j == 2:
+            ax.axhline(
+                y=thresholds[j],
+                color="blueviolet",
+                linestyle="--",
+                linewidth=1.7,
+                label="Concentration \n moyenne \n"+ \
+                "journalière \n recommandée (O.M.S)")
+    if max_value > thresholds[max_level]:
+        ax.fill_between(
+            list(range(24)),
+            ax.get_ylim()[1],
+            y2=thresholds[max_level],
+            color="magenta",
+            alpha=0.1)
+    ax.set_yticks([0])
+    ax.set_yticklabels([" "])
+    ax.legend(loc="upper right")
+    pyplot.show()
