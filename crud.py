@@ -13,17 +13,17 @@ mongoClient = MongoClient("mongodb://localhost:27017")
 stringToDatetime = lambda x: datetime.strptime(x,"%Y/%m/%d %H:%M:%S")
 
 updateList = Code('''
-function (history, data_45_days_ago, data_yesterday){
-  if (!data_45_days_ago && !data_yesterday){
+function (history, data_180_days_ago, data_yesterday){
+  if (!data_180_days_ago && !data_yesterday){
     return history;
-  } else if (data_45_days_ago && !data_yesterday){
+  } else if (data_180_days_ago && !data_yesterday){
     return history.slice(1);
   } else {
     const new_date = data_yesterday.date
     const new_value = data_yesterday.value
     history.dates.push(new_date);
     history.values.push(new_value);
-    if (data_45_days_ago){
+    if (data_180_days_ago){
       history = history.slice(1)
     }
     return history;
@@ -31,9 +31,10 @@ function (history, data_45_days_ago, data_yesterday){
 }
 ''')
 
-def update_database():
-    mongoClient.drop_database("air_quality")
-    database = mongoClient["air_quality"]
+def update_database(initialization=False):
+    if initialization:
+        mongoClient.drop_database("air_quality")
+        database = mongoClient["air_quality"]
     if "last_update" not in database.list_collection_names():
         # I create the "LCSQA_stations" (line ) collection using the "f" file.
         url = "https://www.lcsqa.org/system/files/media/documents/"+\
@@ -86,15 +87,19 @@ def update_database():
         
         # I create the "distribution_pollutants" (line ) and "LCSQA_data" (line ) collections
         # using pollution data collected over the last 45 days (line  to ).
-        DATE = date.today()-timedelta(days=45)
+        DATE = date.today()-timedelta(days=180)
         while DATE < date.today():
             url = "https://files.data.gouv.fr/lcsqa/concentrations-de"+\
             "-polluants-atmospheriques-reglementes/temps-reel/"+\
             str(DATE.year)+"/FR_E2_"+DATE.isoformat()+".csv"
             data = read_csv(url, sep=";")
+            if "validité" not in data.columns:
+                DATE += timedelta(days=1)
+                continue
             data = data[data["validité"]==1]
+            data = data[data["valeur brute"]>0]
             data["pollutant_to_ignore"] = data["Polluant"].apply(
-                lambda x: x in ["NO","NOX as NO2"])
+                lambda x: x in ["NO","NOX as NO2","C6H6"])
             data = data[data["pollutant_to_ignore"]==False]
             records = data.to_dict("records")
             for r in records:
@@ -111,14 +116,14 @@ def update_database():
             {"$out": "distribution_pollutants"}])
         database["LCSQA_data"].aggregate([
             {"$group":
-                {"_id": {"station": "$code station",
+                {"_id": {"station": "$code site",
                          "pollutant": "$Polluant",
                          "hour": "$hour"},
                  "values": {"$push": "$valeur brute"},
                  "dates": {"$push": "$date"}}},
             {"$project":
                 {"history": {"values": "$values",
-                             "dates": "dates"}}},
+                             "dates": "$dates"}}},
             {"$out": "LCSQA_data"}])
         # Since the present application will be deployed using Docker containers, we     
         # can't update the history of data in a continuous way. We have to keep track of
@@ -149,7 +154,7 @@ def update_database():
             database["new_data"].insert_many(new_records)
             database["new_data"].aggregate([
                 {"$match": {"validité": 1}},
-                {"$project": {"_id": {"station": "$code station",
+                {"$project": {"_id": {"station": "$code site",
                                       "pollutant": "$Polluant",
                                       "hour": "$hour"},
                               "history": {"date": "$date",
@@ -168,9 +173,9 @@ def update_database():
                                       "$data_45_days_ago",
                                       "$new_data"],
                              "lang": "js"}},
-                     "data_45_days_ago":
+                     "data_180_days_ago":
                         {"$eq": ["history.dates.$",
-                                 date.today()-timedelta(days=45)]}}},
+                                 date.today()-timedelta(days=180)]}}},
                 {"$out": "LCSQA_data"}])
             database.drop_collection("new_data")
             following_date += timedelta(days=1)
@@ -187,21 +192,31 @@ def history_is_updated():
     return database["last_update"].find_one()["date"] == \
     datetime(DATE.year, DATE.month, DATE.day) - timedelta(days=1)
 
-def get_response(station, pollutant, n_days):
+def is_monitored_by(pollutant, station):
     database = mongoClient["air_quality"]
-    averages = {str(x): 0 for x in range(24)}
-    if n_days:
-        data = database["LCSQA_data"].find(
-		    {"_id.station": station,
-		    "_id.pollutant": pollutant})
+    return pollutant in \
+    list(set(database["distribution_pollutants"].find_one(
+        {"_id": station})
+    ["monitored_pollutants"]))
+
+def get_values(station, pollutant, n_days):
+    database = mongoClient["air_quality"]
+    DATE = date.today()
+    DATETIME = datetime(DATE.year, DATE.month, DATE.day)
+    averages = {str(x): float(0) for x in range(24)}
+    data = database["LCSQA_data"].find(
+        {"_id.station": station,
+         "_id.pollutant": pollutant})
+    if n_days and data:
         for document in data:
             hour = document["_id"]["hour"]
             history = list(zip(
                 document["history"]["values"],
-                document["history"]["dates"]
-            )).reversed()
+                document["history"]["dates"]))[::-1]
             i = 0
-            while date.today()-history[i][1] <= timedelta(days=n_days):
+            duration = DATETIME - history[i][1]
+            while duration.days <= n_days:
                 i += 1
-            averages[str(hour)] = mean([e[0] for e in history[:i]])
-    return averages
+                duration = DATETIME - history[i][1]
+            averages[str(hour)] = float(mean([e[0] for e in history[:i]]))
+    return list(averages.values())

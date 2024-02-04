@@ -1,16 +1,16 @@
-from enum import Enum
-from typing import Annotated, Dict
+from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query
 from pandas import read_excel
 from pydantic import BaseModel, Field
 
-from .crud import get_response, history_is_updated, update_database
+from .crud import \
+get_values, history_is_updated, is_monitored_by, update_database
 
 app = FastAPI()
 
 # Initialization of the database.
-update_database()
+update_database(initialization=True)
 
 class averageConcentrations(BaseModel):
     values: list[float] = Field(
@@ -26,7 +26,7 @@ LCSQA_stations = read_excel(
     sheet_name=1
 ).iloc[:,0][2:].tolist()
 
-@app.get("/", response_model=list[averageConcentrations])
+@app.get("/", response_model=averageConcentrations)
 async def get_response(
     station: Annotated[
         str,
@@ -44,7 +44,7 @@ async def get_response(
                 "Pollutant whose average daily variation of air\
                 concentration we want to display."))],
     n_days: Annotated[
-        int,
+        str,
         Query(
             alias="n",
             description=(
@@ -52,10 +52,16 @@ async def get_response(
                  the period whose pollution data are being used by the\
                  API (i.e the analysis is based on data collected over\
                  the last 'n_days' days)."),
-            ge=0,
-            le=45)]):
+            pattern="\d+")]):
     if station not in LCSQA_stations:
-        raise HTTPException(status_code=404, detail="The station code is not valid !")
+        raise HTTPException(status_code=400, detail="Station code not valid !")
+    if pollutant not in ["03","NO2","SO2","PM2.5","PM10","CO"]:
+        raise HTTPException(status_code=400, detail="No data for this pollutant !")
+    if not(is_monitored_by(pollutant, station)):
+        raise HTTPException(status_code=400, detail="Pollutant not available for this station !")
+    if int(n_days) not in list(range(181)):
+        raise HTTPException(status_code=400, detail="Number of days too high !")
     if not(history_is_updated):
         update_database()
-    return get_response(station, pollutant, n_days)
+    return averageConcentrations(
+        values=get_values(station, pollutant, int(n_days)))
