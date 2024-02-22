@@ -1,10 +1,8 @@
 import subprocess
 import time
 from datetime import date, datetime, timedelta
-from statistics import mean
 
 import requests
-from matplotlib import pyplot
 from pymongo import MongoClient
 
 overseas_departments = [
@@ -18,14 +16,11 @@ overseas_departments = [
 
 symbol_to_name = {
     "O3": "ozone",
-    "NO2": "dioxyde d'azote",
-    "SO2": "dioxyde de soufre",
-    "PM2.5": "particules fines",
-    "PM10": "particules",
-    "CO": "monoxyde de carbone"
-}
-name_to_symbol = {
-    v: k for (k, v) in symbol_to_name.items()
+    "NO2": "nitrogen dioxide",
+    "SO2": "sulphur dioxide",
+    "PM2.5": "fine particles",
+    "PM10": "particles",
+    "CO": "carbone monoxide"
 }
 
 OMS_guidelines = {
@@ -35,165 +30,198 @@ OMS_guidelines = {
     )
 }
 
-mongoClient = MongoClient() # mongodb://localhost:8001
+mongoClient = MongoClient("mongodb://localhost:8001")
 database = mongoClient["air_quality"]
 
-def get_choices_from_database(about, search_filter=None):
+def get_items(about, query_filter):
+    '''
+    Query the "air_quality" database to retrieve the items
+    representing the available choices proposed to the user.
+
+    Arguments:
+    about -- string determining the name of the collection
+             to query within the database.
+    query_filter -- dictionary used as filter for the query.
+    '''
+    # Query the appropriate collection and store the retrieved
+    # elements in a list "items".
     match about:
         case "regions":
             items = database["regions"].find().distinct("_id")
             for e in overseas_departments:
                 items.remove(e)
         case "departments":
-            if search_filter["_id"] == "OUTRE-MER":
+            if query_filter["_id"] == "OUTRE-MER":
                 items = overseas_departments
             else:
                 items = list(set(database["regions"].find_one(
-                    search_filter)["departments"]))
+                    query_filter)["departments"]))
         case "cities":
             items = list(set(database["departments"].find_one(
-                search_filter
-            )["cities"]))
+                query_filter)["cities"]))
         case "stations":
             list_of_stations = database["cities"].find_one(
-                search_filter
-            )["stations"]
+                query_filter)["stations"]
             items = list(set([
-                e["name"]+" (zone "+e["zone"]+")#"+e["code"]
+                e["name"]+"#"+e["code"]
                 for e in list_of_stations]))
         case "pollutants":
-            items = list(map(
-                lambda x: symbol_to_name[x],
-                list(set(database["distribution_pollutants"].find_one(
-                    search_filter
-                )["monitored_pollutants"]))))
-    choices = list(zip(range(1,len(items)+1), sorted(items)))
+            items = list(set(database["distribution_pollutants"].find_one(
+                query_filter)["monitored_pollutants"]))
+    # Build the "listed_items" list giving the ordered set of the retrieved
+    # items along with their corresponding position.
+    listed_items = list(zip(sorted(items), range(1,len(items)+1)))
     if about == "regions":
-        choices.append((len(choices)+1,"OUTRE-MER"))
-    return choices
+        listed_items.append((len(listed_items)+1,"OUTRE-MER"))
+    return listed_items
 
-french_translation = {
-    "regions": "régions",
-    "departments": "départements",
-    "cities": "communes",
-    "stations": "stations"}
 
 all_the_stations = database["distribution_pollutants"].distinct("_id")
 
 def is_number(string):
+    '''
+    Return True if "string" represents a positive integer,
+    False otherwise.
+    '''
     try:
         int(string)
         return True
     except ValueError:
         return False
 
-def get_input_from_user(about, choices, shorter_period=False, first_choice=False):
-    if about in french_translation.keys():
-        message_to_user = "Veuillez indiquer le numéro correspondant "+\
-            ("à la " if about in ["regions","cities","stations"] else "au ")+\
-            french_translation[about][:-1] + " de votre choix."+"\n\n"
-        list_choices = [
-            str(e[0])+" : "+(e[1] if not(about=="stations") 
-            else e[1][:e[1].index(")")+1]) for e in choices]
+def get_input(about, items, shorter_period=False, first_choice=False):
+    '''
+    Display the available choices, check validity of the input and return it.
+
+    Arguments:
+    about -- string determining the message displayed to the user.
+    items -- list containing the choices proposed to the user.
+    shorter_period -- boolean set to True when treating the specific case of
+                      allowing the user to reduce the number of pollution days
+                      taken into account.
+    '''
+    if about not in ["pollutants","n_days"]:
+        message_to_user = "Select a French "+about+"."
+        choices = [
+            str(e[1])+" : "+(e[0] if not(about=="stations") 
+            else e[0][:e[0].index("#")]) for e in items]
     elif about == "pollutants":
-        message_to_user = "Par quelle type de pollution ètes-vous intéressé ?\n\n"
-        list_choices = [
-            str(e[0])+" : Pollution "+("à l'" if e[1]=="ozone" else "au ")+e[1]
-            for e in choices]
+        message_to_user = "Select an air pollutant."
+        choices = [str(e[1])+" : "+e[0] for e in items]
     elif not(shorter_period):
-        message_to_user = " L'analyse de pollution est par défaut réalisée à "+\
-        "partir de valeurs de\nconcentration atmosphérique obtenues sur les "+\
-        "180 derniers jours. \nVoulez-vous considérer une période plus courte ?\n\n"
-        list_choices = ["Si oui, entrez 0.", "Sinon, entrez 1."]
+        message_to_user = "The pollution analysis is based on data collected\n\
+        over the last 180 days. Do you want to consider a shorter period? (Y/n)"
+        choices = []
     else:
-        message_to_user = "Entrez le nombre de jours souhaité.\n\
-             (Indiquez '0' pour revenir aux choix précédents)\n\n"
-        list_choices = [""]
+        message_to_user = "Enter a number of days.\n"
+        choices = []
+    # Add the "Return" option allowing to return to the previous
+    # choices.
     if about != "regions":
-        list_choices += [
-            "\n"+str(len(list_choices)+1)+ " : Retour"]
-    x = 0 if about == "n_days" and not(shorter_period) else 1
-    y = 45 if about == "n_days" and shorter_period else len(list_choices)+1
-    text = message_to_user+"\n".join(list_choices)+"\n\n"
+        choices += [
+            "\n"+str(len(lines)+1)+ " : Return"]
+    # Ask the user for his choice and save the "answer".
+    text = message_to_user+"\n".join(choices)+"\n\n"
     space = "\n" if (about == "regions" and first_choice) else "\n"*4
-    number = input(space+text)
-    while not(is_number(number) and int(number) in range(x,y)):
-        number = input("\n"*4+text)
-    if int(number) < y-1:
-        if about == "stations":
-            item = choices[int(number)-1][1]
+    answer = input(space+text)
+    # If a number is expected as input...
+    if not(about=="n_days" and not(shorter_period)):
+        # Assign to "n" the highest possible value for the input.
+        n = 180 if about == "n_days" and shorter_period else len(choices)+1
+        # Ask the same question to the user until a valid answer is provided.
+        while not(is_number(answer) and int(answer) in range(1,n+1)):
+            answer = input("\n"*4+text)
+        number = int(answer)
+        # Check avaibility of pollution data recorded by the chosen station.
+        if number < n and about == "stations":
+            item = choices[number-1][1]
             station_found = item[item.index("#")+1:] in all_the_stations
             if not(station_found):
-                print("Désolé, aucune données disponibles pour cette station.\n")
-                return 0
-        if about == "n_days" and not(shorter_period):
-            if int(number):
-                return "180"
-            else:
-                return get_input_from_user(about, choices, shorter_period=True)
-    return number
+                print("Sorry, no data available for this station.\n")
+                return None
+
+        return number
+    else:
+        while answer not in ["Y","y","n"]:
+            answer = input("\n"*4+text)
+        if answer in ["Y","y"]:
+            return "180"
+        else:
+            return get_input(about, items, shorter_period=True)
 
 steps = ["regions","departments","cities","stations","pollutants","n_days"]
 
-class Interaction_with_user():
+class userChoices():
+    '''
+    Interact with the user to retrieve the query string parameters to send
+    to the API endpoint.
+    '''
     def __init__(self):
-        self.parameters = {
+        self.query_parameters = {
             "s": None,
             "station_name": None,
             "p": None,
             "n": None}
-        self.i = 0
-        self.first_choice = True
+        self.i = 0 # saves the current step.
+        self.current_filter = None
         self.previous_filter = None
-        self.next_filter = None
-        self.go_back = False
+        self.return_back = False
         self.station_not_found = False
         self.done = False
 
-    def get_selected_item(self):
+    def get_chosen_item(self):
+        '''
+        Display the available choices and save the provided input.
+        '''
         current_step = steps[self.i]
+        # Retrieve items from the database.
         if not(self.i):
-            choices = get_choices_from_database(current_step)
+            items = get_items(current_step, {})
         elif current_step != "n_days":
-            choices = get_choices_from_database(
+            items = get_items(
                 current_step,
-                search_filter=self.next_filter)
+                search_filter=self.current_filter)
+        # No items listed at the last step.
         else:
-            choices = []
+            items = []
         
-        x = get_input_from_user(
-            current_step,
-            choices,
-            first_choice=self.first_choice)
-        if type(x) is str:
+        x = get_input(current_step, items)
+        # Check whether the present case is not the one where the station
+        # chosen by the user does not provide any pollution data.
+        if type(x) is int:
             if self.i != 5:
-                item = None if int(x) == len(choices)+1 else \
-                choices[int(x)-1][1]
+                choicen_item = None if x == len(listed_items)+1 else \
+                listed_items[x-1][1]
             else:
-                item = int(x)
-            if item is None:
-                self.go_back = True
+                chosen_item = x
+            if chosen_item is None:
+                self.return_back = True
             else:
-                self.previous_filter = self.next_filter
+                self.previous_filter = self.current_filter
                 if current_step in ["regions","departments","cities"]:
-                    self.next_filter = {"_id": item}
+                    self.current_filter = {"_id": chosen_item}
                 elif current_step == "stations":
-                    name, code = item.split(sep="#")
-                    self.parameters["s"] = code
-                    self.parameters["station_name"] = name
-                    self.next_filter = {"_id": code}
+                    name, code = chosen_item.split(sep="#")
+                    self.query_parameters["s"] = code
+                    self.query_parameters["station_name"] = name
+                    self.current_filter = {"_id": code}
                 elif current_step == "pollutants":
-                    self.parameters["p"] = name_to_symbol[item]
+                    self.query_parameters["p"] = chosen_item
                 else:
-                    self.parameters["n"] = item
+                    self.query_parameters["n"] = chosen_item
+                    # Indicate that the saving of the query parameters is done.
                     self.done = True
         else:
             self.station_not_found = True
     def next_step(self):
-        if self.go_back:
+        '''
+        Move the process one step forward or one step backward
+        depending on the user's choice.
+        '''
+        if self.return_back:
             self.i -= 1
-            self.next_filter = self.previous_filter
-            self.go_back = False
+            self.current_filter = self.previous_filter
+            self.return_back = False
         else:
             if self.station_not_found:
                 self.done = True
@@ -232,8 +260,8 @@ def plot_variation(station, pollutant, values):
                 color="blueviolet",
                 linestyle="--",
                 linewidth=1.7,
-                label="Concentration \n moyenne \n"+ \
-                "journalière \n recommandée (O.M.S)")
+                label="Concentration \n moyenne \n\
+                journalière \n recommandée (O.M.S)")
     if max_value > thresholds[max_level]:
         ax.fill_between(
             list(range(24)),
@@ -245,14 +273,14 @@ def plot_variation(station, pollutant, values):
     ax.set_yticklabels([" "])
     ax.legend(loc="upper right")
     ax.set_title(
-        station+"/\nPollution "+
-        ("à l'" if pollutant=="O3" else "au ")+
-        symbol_to_name[pollutant],
+        "Average daily"+symbol_to_name[pollutant]+" pollution\n\
+        recorded at :\n"+station,
         ha="center")
     pyplot.savefig("image")
 
 
 def main():
+        
     i = 0
     while "last_update" not in database.list_collection_names():
         if i == 4:
@@ -275,14 +303,14 @@ def main():
             params=parameters,
             verify=False)
     
-    process = Interaction_with_user()
+    process = User_choices()
     while not(process.done):
         process.get_selected_item()
         process.next_step()
 
     values = requests.get(
         "http://127.0.0.1:8000",
-        params=process.parameters,
+        params=process.query_parameters,
         verify=False).json()["values"]
     plot_variation(
         process.parameters["station_name"],
