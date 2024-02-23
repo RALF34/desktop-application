@@ -3,6 +3,7 @@ import time
 from datetime import date, datetime, timedelta
 
 import requests
+from matplotlib import pyplot
 from pymongo import MongoClient
 
 overseas_departments = [
@@ -23,7 +24,7 @@ symbol_to_name = {
     "CO": "carbone monoxide"
 }
 
-OMS_guidelines = {
+WHO_recommendation = {
     pollutant: value for (pollutant, value) in zip(
         symbol_to_name.keys(),
         [100,25,40,15,45,4]        
@@ -229,21 +230,42 @@ class userChoices():
     
 
 def plot_variation(station, pollutant, values):
+    '''
+    Generate the graph showing average daily variation (obtained using
+    average concentrations recorded at each of the 24 hours of the day, 
+    stored in "values") of air concentration of "pollutant" recorded by 
+    "station".
+    '''
     fig, ax = pyplot.subplots()
     fig.set_size_inches(17,14)
     ax.scatter([str(x)+"h00" for x in range(24)], values)
-    max_value = max(values)
+    # Compute four threshold values based on the corresponding WHO
+    # recommendation (will be used later to split the graph into
+    # colored zones, improving readibility and understanding of the
+    # displayed pollution data).
     thresholds = [
-        (x/3)*OMS_guidelines[pollutant]
+        (x/3)*WHO_recommendation[pollutant]
         for x in range(1,5)]
+    ax.plot(
+        range(24),
+        [thresholds[2]]*24,
+        color="blueviolet",
+        ls="--",
+        lw=1.7,
+        label="Average daily air\nconcentration\nrecommended by WHO")
+    # Determine the maximum value to consider for the Y-axis in order
+    # to avoid scaling issues which could affect readibility of the
+    # displayed data.
+    highest_value = max(values)
     max_level = 2
-    while (max_level < 5 and thresholds[max_level] < max_value):
+    while (max_level < 5 and thresholds[max_level] < highest_value):
         max_level += 1
     if max_level == 5:
         max_level -= 1
     space = (0.40)*thresholds[0]
-    lim = thresholds[max_level] if max_level == 2 else max_value
+    lim = thresholds[max_level] if max_level == 2 else highest_value
     ax.set_ylim(0,lim+(space if max_level == 2 else 0))
+    # Split the graph into four colored zones.
     colors = ["limegreen","yellow","orange","red"]
     y_min = 0
     for j in list(range(max_level+1)):
@@ -254,15 +276,9 @@ def plot_variation(station, pollutant, values):
             color=colors[j],
             alpha=0.1)
         y_min = thresholds[j]
-        if j == 2:
-            ax.axhline(
-                y=thresholds[j],
-                color="blueviolet",
-                linestyle="--",
-                linewidth=1.7,
-                label="Concentration \n moyenne \n\
-                journalière \n recommandée (O.M.S)")
-    if max_value > thresholds[max_level]:
+    # Add a fifth zone if one or several values are above the highest
+    # set threshold.
+    if highest_value > thresholds[max_level]:
         ax.fill_between(
             list(range(24)),
             ax.get_ylim()[1],
@@ -278,20 +294,26 @@ def plot_variation(station, pollutant, values):
         ha="center")
     pyplot.savefig("image")
 
-
 def main():
-        
+    
+    # Display a message to the user if the initialization process
+    # of the pollution data is still running.
     i = 0
     while "last_update" not in database.list_collection_names():
         if i == 4:
             i = 0
-        print(" Initialisation des données en cours"+(
-            "    " if not(i) else "."*i), end="\r")
+        print(
+            " Sorry, the initialization of the database\nis not complete"+
+            ("    " if not(i) else "."*i),
+            end="\r")
         i += 1
         time.sleep(0.7)
-    
+
     DATE = date.today() - timedelta(days=1)
     DATETIME = datetime(DATE.year, DATE.month, DATE.day)
+    # If some pollution days are missing from the database, send a special
+    # request (with a pollution period of "zero day") to allow the server to
+    # perform an update of the data.
     if database["last_update"].find_one()["date"] != DATETIME:
         dictionary = database["distribution_pollutants"].find_one()
         parameters = {
@@ -302,20 +324,24 @@ def main():
             "http://127.0.0.1:8000",
             params=parameters,
             verify=False)
-    
-    process = User_choices()
+    # Start the process of interacting with the user to get the query parameters
+    # corresponding to his choices.
+    process = userChoices()
     while not(process.done):
-        process.get_selected_item()
+        process.get_chosen_item()
         process.next_step()
-
+    # Send the given query parameters to the endpoint and retrieve the values
+    # provided by the response.
     values = requests.get(
         "http://127.0.0.1:8000",
         params=process.query_parameters,
         verify=False).json()["values"]
+    # Generate the expected graph and display it to the user.
     plot_variation(
         process.parameters["station_name"],
         process.parameters["p"],
         values)
+    subprocess.run(["xdg-open","image.png"])
 
 if __name__=="__main__":
     main()
